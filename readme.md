@@ -11,7 +11,7 @@ go run ./cmd/mcis --budget 500 --concurrency 50 --heads 8 --beam 32 -v --out tex
 ```
 
 ```bash
-go run ./cmd/mcis --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out text --host example.com --cidr-file ./ipv6-cidr.txt
+go run ./cmd/mcis --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out text --host example.com --cidr-file ./ipv6cidr.txt
 ```
 
 [Release](https://github.com/Leo-Mu/montecarlo-ip-searcher/releases/latest) 用户下载解压后在文件夹中右键打开终端，并将程序拖入终端，加入参数即可。
@@ -21,7 +21,7 @@ go run ./cmd/mcis --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out 
 ```
 
 ```bash
- --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out text --host example.com --cidr-file ./ipv6-cidr.txt
+ --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out text --host example.com --cidr-file ./ipv6cidr.txt
 ```
 
 注意，本项目使用的是 https 真返回测速，所以显示延迟会是其它工具的结果加上一个固定值，使用起来是一样的。使用你的网站作为 `--host`（同时用于 SNI 和 Host header），可以保证优选出来的 ip 当前在你的区域一定对你的网站生效，如有特殊需求还可自定义 path。
@@ -93,11 +93,79 @@ go run ./cmd/mcis --budget 2000 --concurrency 100 --heads 10 --beam 32 -v --out 
 - 下载测速会消耗明显流量与时间（50MB/个 IP），建议先用小 N 验证。
 - 本项目同样会**强制直连**并忽略代理环境变量，避免测速被代理扭曲。
 
+### DNS 上传功能
+
+搜索和测速完成后，可将优选 IP 自动上传到 DNS 服务商，作为同一子域名的多条 A/AAAA 记录。
+
+支持的 DNS 服务商：
+
+- **Cloudflare**
+- **Vercel**
+
+#### DNS 上传参数
+
+- `--dns-provider`：DNS 服务商（`cloudflare` 或 `vercel`）
+- `--dns-token`：API Token（也可用环境变量 `CF_API_TOKEN` / `VERCEL_TOKEN`）
+- `--dns-zone`：Cloudflare Zone ID 或 Vercel 域名（也可用环境变量 `CF_ZONE_ID`）
+- `--dns-subdomain`：子域名前缀（如 `cf` 会创建 `cf.example.com`）
+- `--dns-upload-count`：上传 IP 数量（默认与 `--download-top` 相同）
+- `--dns-team-id`：Vercel Team ID（可选，也可用环境变量 `VERCEL_TEAM_ID`）
+
+#### 工作流程
+
+1. 只从经过下载测速的 IP（前 `--download-top` 个）中选择
+2. 按下载速度（Mbps）降序排序
+3. 删除该子域的所有同类型旧记录（A 或 AAAA）
+4. 创建新的 DNS 记录
+
+#### 示例
+
+Cloudflare（使用命令行参数）：
+
+```bash
+./mcis --cidr-file ./ipv4cidr.txt --budget 500 --download-top 5 --dns-provider cloudflare --dns-zone YOUR_ZONE_ID --dns-subdomain cf --dns-token YOUR_API_TOKEN -v
+```
+
+Cloudflare（使用环境变量）：
+
+```bash
+# 先设置环境变量
+export CF_API_TOKEN="your_token"
+export CF_ZONE_ID="your_zone_id"
+
+# 然后运行
+./mcis --cidr-file ./ipv4cidr.txt --budget 500 --download-top 5 --dns-provider cloudflare --dns-subdomain cf -v
+```
+
+Vercel：
+
+```bash
+./mcis --cidr-file ./ipv4cidr.txt --budget 500 --download-top 5 --dns-provider vercel --dns-zone example.com --dns-subdomain cf --dns-token YOUR_VERCEL_TOKEN -v
+```
+
+只上传前 3 个最快的 IP：
+
+```bash
+./mcis --cidr-file ./ipv4cidr.txt --budget 500 --download-top 5 --dns-upload-count 3 --dns-provider cloudflare --dns-zone YOUR_ZONE_ID --dns-subdomain cf --dns-token YOUR_API_TOKEN -v
+```
+
+IPv6 优选并上传（会创建 AAAA 记录）：
+
+```bash
+./mcis --cidr-file ./ipv6cidr.txt --budget 2000 --concurrency 100 --heads 10 --download-top 5 --dns-provider cloudflare --dns-zone YOUR_ZONE_ID --dns-subdomain cf6 --dns-token YOUR_API_TOKEN -v
+```
+
+IPv4 + IPv6 混合优选（A 和 AAAA 记录都会更新）：
+
+```bash
+./mcis --cidr-file ./ipv4cidr.txt --cidr-file ./ipv6cidr.txt --budget 2000 --download-top 5 --dns-provider cloudflare --dns-zone YOUR_ZONE_ID --dns-subdomain cf --dns-token YOUR_API_TOKEN -v
+```
+
 ## 项目自带网段（bgp.he.net 高可见度）
 
 仓库内自带一份 **Cloudflare 实际在用（BGP 可见度高）**的网段列表：
 
-- `ipv6-cidr.txt`：**2025-12-21** 从 `bgp.he.net` 抓取整理，筛选条件为 **visibility > 90%** 的 Cloudflare IPv6 前缀（每行一个 CIDR）。
+- `ipv6cidr.txt`：**2025-12-21** 从 `bgp.he.net` 抓取整理，筛选条件为 **visibility > 90%** 的 Cloudflare IPv6 前缀（每行一个 CIDR）。
 
 说明：
 

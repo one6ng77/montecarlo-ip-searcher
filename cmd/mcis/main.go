@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Leo-Mu/montecarlo-ip-searcher/internal/dns"
 	"github.com/Leo-Mu/montecarlo-ip-searcher/internal/output"
 	"github.com/Leo-Mu/montecarlo-ip-searcher/internal/probe"
 	"github.com/Leo-Mu/montecarlo-ip-searcher/internal/search"
@@ -50,6 +53,14 @@ func main() {
 		maxBitsV6 int
 		seed      int64
 		verbose   bool
+
+		// DNS upload flags
+		dnsProvider    string
+		dnsToken       string
+		dnsZone        string
+		dnsSubdomain   string
+		dnsUploadCount int
+		dnsTeamID      string
 	)
 
 	flag.Var(&cidrs, "cidr", "CIDR to search (repeatable). Example: 1.1.0.0/16 or 2606:4700::/32")
@@ -76,6 +87,14 @@ func main() {
 	flag.IntVar(&maxBitsV6, "max-bits-v6", 56, "Maximum IPv6 prefix bits to drill down to")
 	flag.Int64Var(&seed, "seed", 0, "Random seed (0 = time-based)")
 	flag.BoolVar(&verbose, "v", false, "Verbose progress to stderr")
+
+	// DNS upload flags
+	flag.StringVar(&dnsProvider, "dns-provider", "", "DNS provider for uploading results (cloudflare|vercel)")
+	flag.StringVar(&dnsToken, "dns-token", "", "DNS provider API token (or use CF_API_TOKEN/VERCEL_TOKEN env)")
+	flag.StringVar(&dnsZone, "dns-zone", "", "DNS zone ID (Cloudflare) or domain (Vercel) (or use CF_ZONE_ID env)")
+	flag.StringVar(&dnsSubdomain, "dns-subdomain", "", "Subdomain to update (e.g., 'cf' for cf.example.com)")
+	flag.IntVar(&dnsUploadCount, "dns-upload-count", 0, "Number of IPs to upload (default: same as --download-top)")
+	flag.StringVar(&dnsTeamID, "dns-team-id", "", "Vercel Team ID (optional, or use VERCEL_TEAM_ID env)")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -151,6 +170,85 @@ func main() {
 			if verbose {
 				fmt.Fprintf(os.Stderr, "download: rank=%d ip=%s ok=%v mbps=%.2f ms=%d bytes=%d err=%s\n",
 					i+1, r.IP.String(), dr.OK, dr.Mbps, dr.TotalMS, dr.Bytes, dr.Error)
+			}
+		}
+	}
+
+	// DNS upload
+	if dnsProvider != "" {
+		if dnsSubdomain == "" {
+			fmt.Fprintln(os.Stderr, "error: --dns-subdomain is required when --dns-provider is set")
+			os.Exit(1)
+		}
+		if dlTop <= 0 {
+			fmt.Fprintln(os.Stderr, "error: --download-top must be > 0 when using DNS upload")
+			os.Exit(1)
+		}
+
+		dnsCfg := dns.Config{
+			Provider:    dnsProvider,
+			Token:       dnsToken,
+			Zone:        dnsZone,
+			Subdomain:   dnsSubdomain,
+			UploadCount: dnsUploadCount,
+			TeamID:      dnsTeamID,
+		}
+
+		provider, err := dns.NewProvider(dnsCfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+
+		// Collect IPs from download-tested results only (first dlTop entries)
+		// Filter for successful downloads and sort by download speed (Mbps, descending)
+		type dlResult struct {
+			IP   netip.Addr
+			Mbps float64
+		}
+		var candidates []dlResult
+		for i := 0; i < dlTop && i < len(res.Top); i++ {
+			r := res.Top[i]
+			if r.DownloadOK {
+				candidates = append(candidates, dlResult{IP: r.IP, Mbps: r.DownloadMbps})
+			}
+		}
+
+		// Sort by download speed (highest first)
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Mbps > candidates[j].Mbps
+		})
+
+		// Determine how many IPs to upload
+		uploadN := dnsCfg.UploadCount
+		if uploadN <= 0 {
+			uploadN = dlTop
+		}
+		if uploadN > len(candidates) {
+			uploadN = len(candidates)
+		}
+
+		// Collect IPs to upload
+		var ipsToUpload []netip.Addr
+		for i := 0; i < uploadN; i++ {
+			ipsToUpload = append(ipsToUpload, candidates[i].IP)
+		}
+
+		if len(ipsToUpload) > 0 {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "dns: uploading %d IPs to %s (subdomain: %s), sorted by download speed...\n",
+					len(ipsToUpload), provider.Name(), dnsSubdomain)
+				for i, ip := range ipsToUpload {
+					fmt.Fprintf(os.Stderr, "  %d. %s (%.2f Mbps)\n", i+1, ip.String(), candidates[i].Mbps)
+				}
+			}
+			if err := dns.Upload(ctx, provider, dnsSubdomain, ipsToUpload, verbose); err != nil {
+				fmt.Fprintln(os.Stderr, "dns upload error:", err)
+				os.Exit(1)
+			}
+		} else {
+			if verbose {
+				fmt.Fprintln(os.Stderr, "dns: no successful download-tested IPs to upload")
 			}
 		}
 	}
