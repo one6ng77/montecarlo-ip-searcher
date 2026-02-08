@@ -90,7 +90,7 @@ func main() {
 	flag.StringVar(&hostHdr, "host-header", "", "HTTP Host header (deprecated: use --host)")
 	flag.StringVar(&path, "path", "/cdn-cgi/trace", "HTTP path to request")
 	flag.IntVar(&dlTop, "download-top", 5, "After search, run download speed test for top N IPs (0 to disable)")
-	flag.Int64Var(&dlBytes, "download-bytes", 50_000_000, "Download test size in bytes (default endpoint: speed.cloudflare.com/__down?bytes=...)")
+	flag.Int64Var(&dlBytes, "download-bytes", 0, "Download test size in bytes; 0 = 50M for default endpoint, no limit for custom URL (default: 0)")
 	flag.DurationVar(&dlTimeout, "download-timeout", 45*time.Second, "Per-IP download test timeout")
 	flag.StringVar(&dlURL, "download-url", "", "Custom download test URL (e.g. https://myhost.com/path/to/file). Overrides default speed.cloudflare.com")
 	flag.StringVar(&outFmt, "out", "jsonl", "Output format: jsonl|csv|text")
@@ -205,9 +205,13 @@ func main() {
 	if dlTop < 0 {
 		dlTop = 0
 	}
-	if dlTop > 0 && (dlBytes > 0 || dlURL != "") {
+	if dlTop > 0 {
 		if dlTop > len(res.Top) {
 			dlTop = len(res.Top)
+		}
+		// Default Bytes=0 (no limit); when no custom URL use 50M.
+		if dlBytes == 0 && dlURL == "" {
+			dlBytes = 50_000_000
 		}
 		dlCfg := probe.DownloadConfig{
 			Timeout: dlTimeout,
@@ -230,10 +234,6 @@ func main() {
 				dlCfg.Path = u.Path + "?" + u.RawQuery
 			}
 			dlCfg.CustomURL = true
-			// Default to no limit for custom URL; user can cap with --download-bytes.
-			if dlBytes == 50_000_000 {
-				dlCfg.Bytes = 0
-			}
 		}
 		dlp := probe.NewDownloadProber(dlCfg)
 		if verbose {
